@@ -24,15 +24,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
 	valkeyiov1alpha1 "github.com/valkey-io/valkey-operator/api/v1alpha1"
 )
 
 // spec.exporter carries an object-level default of {enabled: true}, which only
-// applies when the whole object is absent. Without a default on the field
-// itself, setting any sibling field made the object present and dropped enabled
-// to false, silently removing the sidecar (#394).
+// applies when the whole object is absent. Setting any sibling field used to
+// drop enabled to false and silently remove the sidecar (#394). The cluster
+// controller resolves a nil enabled to true and propagates an explicit value
+// to its nodes; a ValkeyNode alone runs the sidecar only on an explicit true.
 var _ = Describe("exporter enabled defaulting", func() {
 	var ctx context.Context
 
@@ -61,37 +63,63 @@ var _ = Describe("exporter enabled defaulting", func() {
 		return stored
 	}
 
-	// expectDefaultedTrue asserts the API server materialised the field rather
-	// than leaving it nil. IsEnabled() alone would also pass on a nil, so it
-	// cannot tell a working default from a dropped marker.
-	expectDefaultedTrue := func(cluster *valkeyiov1alpha1.ValkeyCluster) {
+	// expectExporterOn asserts the resolved default reaches the pod: the node
+	// spec built from the cluster carries an explicit true and the rendered
+	// pod has the sidecar.
+	expectExporterOn := func(cluster *valkeyiov1alpha1.ValkeyCluster) {
 		GinkgoHelper()
-		Expect(cluster.Spec.Exporter.Enabled).NotTo(BeNil(),
-			"the CRD default must materialise enabled on the stored object")
-		Expect(*cluster.Spec.Exporter.Enabled).To(BeTrue())
 		Expect(cluster.Spec.Exporter.IsEnabled()).To(BeTrue())
+
+		node := buildClusterValkeyNode(cluster, 0, 0)
+		Expect(node.Spec.Exporter.Enabled).NotTo(BeNil(),
+			"the cluster controller must propagate an explicit value")
+		Expect(*node.Spec.Exporter.Enabled).To(BeTrue())
+
+		pts, err := buildValkeyNodePodTemplateSpec(node, valkeyNodeLabels(node))
+		Expect(err).NotTo(HaveOccurred())
+		names := make([]string, 0, len(pts.Spec.Containers))
+		for _, c := range pts.Spec.Containers {
+			names = append(names, c.Name)
+		}
+		Expect(names).To(ContainElement("metrics-exporter"))
 	}
 
+	// A typed Go client cannot omit the block: a struct never satisfies
+	// omitempty, so it always sends exporter: {}. Only an unstructured create
+	// exercises the object-level default the way applied YAML does.
 	It("enables the exporter when spec.exporter is omitted", func() {
-		cluster := &valkeyiov1alpha1.ValkeyCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: "exp-omitted", Namespace: "default"},
-			Spec:       valkeyiov1alpha1.ValkeyClusterSpec{Shards: 1, Replicas: 0},
-		}
-		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		u := &unstructured.Unstructured{}
+		u.SetAPIVersion("valkey.io/v1alpha1")
+		u.SetKind("ValkeyCluster")
+		u.SetName("exp-omitted")
+		u.SetNamespace("default")
+		Expect(unstructured.SetNestedMap(u.Object, map[string]any{
+			"shards":   int64(1),
+			"replicas": int64(0),
+		}, "spec")).To(Succeed())
+		Expect(k8sClient.Create(ctx, u)).To(Succeed())
 		DeferCleanup(func() {
-			_ = k8sClient.Delete(ctx, cluster)
+			_ = k8sClient.Delete(ctx, u)
 		})
 
 		stored := &valkeyiov1alpha1.ValkeyCluster{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "exp-omitted", Namespace: "default"}, stored)).To(Succeed())
-		expectDefaultedTrue(stored)
+		// The object-level default materialises when the block is absent.
+		Expect(stored.Spec.Exporter.Enabled).NotTo(BeNil())
+		Expect(*stored.Spec.Exporter.Enabled).To(BeTrue())
+		expectExporterOn(stored)
+	})
+
+	It("enables the exporter when spec.exporter is empty", func() {
+		stored := storeCluster("exp-empty", valkeyiov1alpha1.ExporterSpec{})
+		expectExporterOn(stored)
 	})
 
 	It("keeps the exporter enabled when only image is set", func() {
 		stored := storeCluster("exp-image", valkeyiov1alpha1.ExporterSpec{
 			Image: "oliver006/redis_exporter:v1.80.0",
 		})
-		expectDefaultedTrue(stored)
+		expectExporterOn(stored)
 	})
 
 	It("keeps the exporter enabled when only resources are set", func() {
@@ -100,28 +128,34 @@ var _ = Describe("exporter enabled defaulting", func() {
 				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("32Mi")},
 			},
 		})
-		expectDefaultedTrue(stored)
+		expectExporterOn(stored)
 	})
 
 	It("keeps the exporter enabled when only args are set", func() {
 		stored := storeCluster("exp-args", valkeyiov1alpha1.ExporterSpec{
 			Args: []string{"--log-format=json"},
 		})
-		expectDefaultedTrue(stored)
+		expectExporterOn(stored)
 	})
 
 	It("keeps the exporter enabled when only securityContext is set", func() {
 		stored := storeCluster("exp-secctx", valkeyiov1alpha1.ExporterSpec{
 			SecurityContext: &corev1.SecurityContext{RunAsNonRoot: boolPtr(true)},
 		})
-		expectDefaultedTrue(stored)
+		expectExporterOn(stored)
 	})
 
 	It("honours an explicit enabled: false", func() {
 		stored := storeCluster("exp-disabled", valkeyiov1alpha1.ExporterSpec{Enabled: boolPtr(false)})
-		Expect(stored.Spec.Exporter.Enabled).NotTo(BeNil())
-		Expect(*stored.Spec.Exporter.Enabled).To(BeFalse())
 		Expect(stored.Spec.Exporter.IsEnabled()).To(BeFalse())
+
+		node := buildClusterValkeyNode(stored, 0, 0)
+		Expect(node.Spec.Exporter.Enabled).NotTo(BeNil())
+		Expect(*node.Spec.Exporter.Enabled).To(BeFalse())
+
+		pts, err := buildValkeyNodePodTemplateSpec(node, valkeyNodeLabels(node))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pts.Spec.Containers).To(HaveLen(1))
 	})
 
 	// Enabled is a *bool so that an explicit false is serialised rather than
@@ -137,5 +171,23 @@ var _ = Describe("exporter enabled defaulting", func() {
 		Expect(reread.Spec.Exporter.Enabled).NotTo(BeNil())
 		Expect(*reread.Spec.Exporter.Enabled).To(BeFalse(),
 			"an explicit false must survive a round trip through the API server")
+	})
+
+	// Guards against a field-level default: it would stamp enabled: true onto
+	// bare ValkeyNodes too, giving standalone nodes a sidecar whose _exporter
+	// credentials nothing provisions.
+	It("does not stamp enabled onto a standalone ValkeyNode", func() {
+		node := &valkeyiov1alpha1.ValkeyNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "exp-standalone", Namespace: "default"},
+			Spec:       valkeyiov1alpha1.ValkeyNodeSpec{},
+		}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, node)
+		})
+
+		stored := &valkeyiov1alpha1.ValkeyNode{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "exp-standalone", Namespace: "default"}, stored)).To(Succeed())
+		Expect(stored.Spec.Exporter.Enabled).To(BeNil())
 	})
 })

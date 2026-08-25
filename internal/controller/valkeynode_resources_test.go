@@ -292,6 +292,19 @@ func TestBuildValkeyNodePodTemplateSpec_WithExporterCustomImage(t *testing.T) {
 	assert.Equal(t, "my-exporter:v2.0.0", pts.Spec.Containers[1].Image)
 }
 
+// A ValkeyNode runs the sidecar only on an explicit enabled: true. The default
+// is resolved at the cluster level; a standalone node must not gain a sidecar
+// whose _exporter credentials nothing provisions.
+func TestBuildValkeyNodePodTemplateSpec_ExporterUnsetOmitsSidecar(t *testing.T) {
+	node := newTestValkeyNode("mynode", "test-ns")
+	node.Spec.Exporter = valkeyv1.ExporterSpec{}
+	pts, err := buildValkeyNodePodTemplateSpec(node, valkeyNodeLabels(node))
+	require.NoError(t, err)
+
+	require.Len(t, pts.Spec.Containers, 1)
+	assert.Equal(t, "server", pts.Spec.Containers[0].Name)
+}
+
 func TestBuildValkeyNodePodTemplateSpec_Scheduling(t *testing.T) {
 	nodeSelector := map[string]string{
 		"disktype": "ssd",

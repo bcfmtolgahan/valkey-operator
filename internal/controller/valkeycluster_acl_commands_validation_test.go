@@ -72,7 +72,8 @@ var _ = Describe("users commands validation", func() {
 	// Every one of these is accepted by Valkey's own ACL parser. Categories and
 	// plain commands aside, the awkward ones carry a digit, an underscore or a
 	// hyphen, and Valkey normalises case, so the pattern cannot be lowercase
-	// letters only.
+	// letters only. Module commands are dotted (json.set, bf.add) and are in no
+	// category except @all, so they can only be granted individually.
 	It("accepts command entries that Valkey accepts", func() {
 		for _, entry := range []string{
 			"@read",
@@ -86,6 +87,11 @@ var _ = Describe("users commands validation", func() {
 			"memory|malloc-stats",
 			"GET",
 			"CLIENT|SETNAME",
+			"json.set",
+			"JSON.SET",
+			"bf.add",
+			"ft._list",
+			"json.debug|memory",
 		} {
 			Expect(applyWithCommands(entry)).To(Succeed(), "entry %q must be accepted", entry)
 		}
@@ -116,6 +122,9 @@ var _ = Describe("users commands validation", func() {
 			"|get",
 			"get||set",
 			"client|no|evict",
+			".set",
+			"json.",
+			"json..set",
 		} {
 			Expect(applyWithCommands(entry)).NotTo(Succeed(), "entry %q must be rejected", entry)
 		}

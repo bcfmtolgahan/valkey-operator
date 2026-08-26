@@ -130,6 +130,10 @@ var _ = Describe("users commands validation", func() {
 			"-",
 			"--",
 			"-flushall",
+			"json.-set",
+			"json.set-",
+			"get|-x",
+			"a--b",
 		} {
 			Expect(applyWithCommands(entry)).NotTo(Succeed(), "entry %q must be rejected", entry)
 		}

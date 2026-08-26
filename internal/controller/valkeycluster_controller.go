@@ -918,10 +918,15 @@ func buildClusterValkeyNode(cluster *valkeyiov1alpha1.ValkeyCluster, shardIndex 
 	nodeSelector := withZonePin(scheduling.NodeSelector, zoneForPod(effectiveZonePinning(cluster.Spec.Scheduling), shardIndex, nodeIndex))
 
 	// Resolve the cluster-level exporter default (nil means enabled) into an
-	// explicit value: a ValkeyNode runs the sidecar only on an explicit true.
+	// explicit true; a ValkeyNode runs the sidecar only then. Disabled stays
+	// nil: old operators omitted false, so an explicit false would make
+	// nodeRequiresRoll fail over upgraded clusters over a no-op spec diff.
 	exporter := cluster.Spec.Exporter
-	exporterEnabled := exporter.IsEnabled()
-	exporter.Enabled = &exporterEnabled
+	exporter.Enabled = nil
+	if cluster.Spec.ExporterEnabled() {
+		enabled := true
+		exporter.Enabled = &enabled
+	}
 
 	return &valkeyiov1alpha1.ValkeyNode{
 		ObjectMeta: metav1.ObjectMeta{

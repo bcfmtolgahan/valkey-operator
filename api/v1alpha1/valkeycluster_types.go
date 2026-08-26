@@ -449,7 +449,7 @@ type ExporterSpec struct {
 
 	// Enable or disable the exporter sidecar container. Unset means enabled
 	// on a ValkeyCluster; a ValkeyNode runs the sidecar only on an explicit
-	// true, which the cluster controller always propagates.
+	// true, which the cluster controller propagates when enabled.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -462,11 +462,11 @@ type ExporterSpec struct {
 	Args []string `json:"args,omitempty"`
 }
 
-// IsEnabled resolves the ValkeyCluster-level default: a nil Enabled means
-// enabled, so overriding any other exporter field keeps the sidecar. Not for
-// ValkeyNode specs, where nil means disabled.
-func (e ExporterSpec) IsEnabled() bool {
-	return e.Enabled == nil || *e.Enabled
+// ExporterEnabled resolves the cluster-level default: a nil
+// spec.exporter.enabled means enabled, so overriding any other exporter
+// field keeps the sidecar.
+func (s ValkeyClusterSpec) ExporterEnabled() bool {
+	return s.Exporter.Enabled == nil || *s.Exporter.Enabled
 }
 
 // ValkeyClusterStatus defines the observed state of ValkeyCluster.

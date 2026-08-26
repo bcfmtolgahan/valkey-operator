@@ -68,7 +68,7 @@ var _ = Describe("exporter enabled defaulting", func() {
 	// pod has the sidecar.
 	expectExporterOn := func(cluster *valkeyiov1alpha1.ValkeyCluster) {
 		GinkgoHelper()
-		Expect(cluster.Spec.Exporter.IsEnabled()).To(BeTrue())
+		Expect(cluster.Spec.ExporterEnabled()).To(BeTrue())
 
 		node := buildClusterValkeyNode(cluster, 0, 0)
 		Expect(node.Spec.Exporter.Enabled).NotTo(BeNil(),
@@ -147,15 +147,32 @@ var _ = Describe("exporter enabled defaulting", func() {
 
 	It("honours an explicit enabled: false", func() {
 		stored := storeCluster("exp-disabled", valkeyiov1alpha1.ExporterSpec{Enabled: boolPtr(false)})
-		Expect(stored.Spec.Exporter.IsEnabled()).To(BeFalse())
+		Expect(stored.Spec.ExporterEnabled()).To(BeFalse())
 
 		node := buildClusterValkeyNode(stored, 0, 0)
-		Expect(node.Spec.Exporter.Enabled).NotTo(BeNil())
-		Expect(*node.Spec.Exporter.Enabled).To(BeFalse())
+		Expect(node.Spec.Exporter.Enabled).To(BeNil(),
+			"disabled must resolve to nil on the node spec — an explicit false rolls upgraded clusters")
 
 		pts, err := buildValkeyNodePodTemplateSpec(node, valkeyNodeLabels(node))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(pts.Spec.Containers).To(HaveLen(1))
+	})
+
+	// Old operators serialised Enabled as a plain bool with omitempty, so a
+	// disabled exporter was stored with the field absent. The desired spec
+	// must reproduce that shape: nodeRequiresRoll compares specs, and a
+	// nil-vs-false mismatch triggers a proactive failover on operator upgrade
+	// even though the rendered pod template is identical (#401).
+	It("predicts no roll for nodes stored by an older operator", func() {
+		stored := storeCluster("exp-upgrade", valkeyiov1alpha1.ExporterSpec{Enabled: boolPtr(false)})
+
+		old := buildClusterValkeyNode(stored, 0, 0)
+		old.Spec.Exporter.Enabled = nil // the shape an old operator stored
+		old.Status.PodIP = "10.0.0.1"
+
+		desired := buildClusterValkeyNode(stored, 0, 0)
+		Expect(nodeRequiresRoll(old, desired)).To(BeFalse(),
+			"a spec-shape-only change must not fail over upgraded clusters")
 	})
 
 	// Enabled is a *bool so that an explicit false is serialised rather than
